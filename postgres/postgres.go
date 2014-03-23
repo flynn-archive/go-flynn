@@ -30,7 +30,7 @@ type DB struct {
 var ErrNoServers = errors.New("postgres: no servers found")
 
 func (db *DB) followLeader(firstErr chan<- error) {
-	for update := range db.set.Watch(true, false) {
+	for update := range db.set.Watch(true) {
 		leader := db.set.Leader()
 		if leader == nil || leader.Attrs["up"] != "true" {
 			if firstErr != nil {
