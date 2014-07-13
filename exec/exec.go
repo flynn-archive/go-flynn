@@ -8,19 +8,19 @@ import (
 	"io/ioutil"
 
 	"github.com/flynn/flynn-host/types"
-	"github.com/flynn/go-dockerclient"
 	"github.com/flynn/go-flynn/cluster"
 	"github.com/flynn/go-flynn/demultiplex"
 )
 
 type Cmd struct {
-	Image  string
 	HostID string
 	JobID  string
 	TTY    bool
-	Attrs  map[string]string
+	Meta   map[string]string
 
 	Entrypoint []string
+
+	Artifact host.Artifact
 
 	Cmd []string
 	Env map[string]string
@@ -48,8 +48,19 @@ type Cmd struct {
 	stdinPipe  *readyWriter
 }
 
-func Command(image string, cmd ...string) *Cmd {
-	return &Cmd{Image: image, Cmd: cmd, done: make(chan struct{})}
+func DockerImage(name, id string) host.Artifact {
+	a := host.Artifact{
+		Type: "docker",
+		URI:  "https://registry.hub.docker.com/" + name,
+	}
+	if id != "" {
+		a.URI += "?id=" + id
+	}
+	return a
+}
+
+func Command(artifact host.Artifact, cmd ...string) *Cmd {
+	return &Cmd{Artifact: artifact, Cmd: cmd, done: make(chan struct{})}
 }
 
 type ClusterClient interface {
@@ -58,8 +69,8 @@ type ClusterClient interface {
 	DialHost(string) (cluster.Host, error)
 }
 
-func CommandUsingCluster(c ClusterClient, image string, cmd ...string) *Cmd {
-	command := Command(image, cmd...)
+func CommandUsingCluster(c ClusterClient, artifact host.Artifact, cmd ...string) *Cmd {
+	command := Command(artifact, cmd...)
 	command.cluster = c
 	return command
 }
@@ -127,25 +138,16 @@ func (c *Cmd) Start() error {
 	}
 
 	job := &host.Job{
-		ID: c.JobID,
-		Config: &docker.Config{
-			Image: c.Image,
-			Cmd:   c.Cmd,
-			Tty:   c.TTY,
-			Env:   formatEnv(c.Env),
+		ID:       c.JobID,
+		Artifact: c.Artifact,
+		Config: host.ContainerConfig{
+			Entrypoint: c.Entrypoint,
+			Cmd:        c.Cmd,
+			TTY:        c.TTY,
+			Env:        c.Env,
+			Stdin:      c.Stdin != nil || c.stdinPipe != nil,
 		},
-		Attributes: c.Attrs,
-	}
-	if c.Stdout != nil || c.stdoutPipe != nil {
-		job.Config.AttachStdout = true
-	}
-	if c.Stderr != nil || c.stderrPipe != nil {
-		job.Config.AttachStderr = true
-	}
-	if c.Stdin != nil || c.stdinPipe != nil {
-		job.Config.AttachStdin = true
-		job.Config.OpenStdin = true
-		job.Config.StdinOnce = true
+		Metadata: c.Meta,
 	}
 
 	c.host, err = c.cluster.DialHost(c.HostID)
@@ -179,13 +181,13 @@ func (c *Cmd) Start() error {
 			Width:  c.TermWidth,
 			Flags:  host.AttachFlagStream,
 		}
-		if job.Config.AttachStdout {
+		if c.Stdout != nil || c.stdoutPipe != nil {
 			req.Flags |= host.AttachFlagStdout
 		}
-		if job.Config.AttachStderr {
+		if c.Stderr != nil || c.stderrPipe != nil {
 			req.Flags |= host.AttachFlagStderr
 		}
-		if job.Config.AttachStdin {
+		if job.Config.Stdin {
 			req.Flags |= host.AttachFlagStdin
 		}
 		rwc, attachWait, err = c.host.Attach(req, true)
